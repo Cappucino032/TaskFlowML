@@ -17,7 +17,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY app.py .
-COPY "Survey Questions for ML Training Data.csv" ./data/
+COPY data/ ./data/
 
 # Create directory for Firebase key (optional)
 RUN mkdir -p /app/keys
