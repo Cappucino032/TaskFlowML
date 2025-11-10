@@ -287,17 +287,27 @@ def train():
 @app.route('/predict', methods=['POST'])
 def predict():
     data = request.get_json()
+    user_id = data.get('userId')
 
-    # Extract task features from request
+    # Try personalized prediction first if user has task history
+    if user_id and firebase_enabled:
+        try:
+            personalized_result = predict_from_user_history(user_id, data)
+            if personalized_result and 'error' not in personalized_result:
+                return jsonify(personalized_result)
+        except Exception as e:
+            print(f"Personalized prediction failed: {e}")
+
+    # Fall back to survey-based prediction
     task_features = {
         'task_type': data.get('category', 'Personal'),
         'priority_level': 'High' if data.get('priority') == 3 else 'Medium' if data.get('priority') == 2 else 'Low',
         'estimated_duration': data.get('estimatedDuration', '30 minutes – 1 hour'),
-        'deadline_proximity': '1–2 days before',  # Default assumption
-        'reschedule_frequency': 'Rarely (1–2 times a week)',  # Default assumption
-        'productive_time': 'Evening (6 PM – 12 MN)',  # Default assumption
-        'preferred_time': 'Evening (6 PM – 12 MN)',  # Default assumption
-        'reminder_preference': 'Early reminders (1–2 days before)'  # Default assumption
+        'deadline_proximity': '1–2 days before',
+        'reschedule_frequency': 'Rarely (1–2 times a week)',
+        'productive_time': 'Evening (6 PM – 12 MN)',
+        'preferred_time': 'Evening (6 PM – 12 MN)',
+        'reminder_preference': 'Early reminders (1–2 days before)'
     }
 
     result = predict_optimal_schedule(task_features)
@@ -330,6 +340,103 @@ def get_user_insights(user_id):
 
     except Exception as e:
         return jsonify({"error": str(e)})
+
+def predict_from_user_history(user_id, task_data):
+    """Predict optimal schedule based on user's own completed task history"""
+    try:
+        # Get user's completed tasks
+        tasks_ref = db.collection('tasks').where('userId', '==', user_id).where('completed', '==', True)
+        tasks = tasks_ref.stream()
+
+        completed_tasks = []
+        for task in tasks:
+            task_dict = task.to_dict()
+            task_dict['id'] = task.id
+            completed_tasks.append(task_dict)
+
+        if len(completed_tasks) < 3:
+            return None  # Not enough data for personalized prediction
+
+        # Get productivity logs for completion times
+        productivity_ref = db.collection('productivityLogs').where('userId', '==', user_id)
+        logs = productivity_ref.stream()
+
+        completion_data = {}
+        for log in logs:
+            log_dict = log.to_dict()
+            task_id = log_dict.get('taskId')
+            if task_id:
+                completion_data[task_id] = log_dict
+
+        # Analyze patterns by category
+        category_patterns = {}
+        current_category = task_data.get('category', 'Personal')
+
+        for task in completed_tasks:
+            category = task.get('category', 'Personal')
+            if category not in category_patterns:
+                category_patterns[category] = []
+
+            # Get completion time from productivity log or estimate
+            task_id = task.get('id')
+            log_data = completion_data.get(task_id, {})
+
+            # Extract completion time (prefer actual log data, fallback to due date)
+            completed_at = None
+            if log_data.get('completedAt'):
+                completed_at = log_data['completedAt']
+            elif task.get('dueAt'):
+                # Assume completed near due date if no log
+                due_date = task['dueAt']
+                if isinstance(due_date, str):
+                    due_date = datetime.fromisoformat(due_date.replace('Z', '+00:00'))
+                completed_at = due_date
+
+            if completed_at:
+                completion_hour = completed_at.hour
+                category_patterns[category].append({
+                    'hour': completion_hour,
+                    'priority': task.get('priority', 2),
+                    'weekday': completed_at.weekday()
+                })
+
+        # Find best time for current category
+        if current_category in category_patterns and category_patterns[current_category]:
+            category_data = category_patterns[current_category]
+
+            # Group by hour and count successes
+            hour_counts = {}
+            for entry in category_data:
+                hour = entry['hour']
+                hour_counts[hour] = hour_counts.get(hour, 0) + 1
+
+            if hour_counts:
+                best_hour = max(hour_counts, key=hour_counts.get)
+                confidence = hour_counts[best_hour] / len(category_data)
+
+                # Convert hour to time period
+                if 6 <= best_hour < 12:
+                    time_period = "Morning (6 AM – 12 NN)"
+                elif 12 <= best_hour < 18:
+                    time_period = "Afternoon (12 NN – 6 PM)"
+                elif 18 <= best_hour < 24:
+                    time_period = "Evening (6 PM – 12 MN)"
+                else:
+                    time_period = "Late Night (12 MN – 3 AM)"
+
+                return {
+                    "optimal_time": time_period,
+                    "confidence": confidence,
+                    "model_used": f"personalized ({current_category})",
+                    "sample_size": len(category_data),
+                    "reasoning": f"Based on {len(category_data)} completed {current_category.lower()} tasks"
+                }
+
+        return None
+
+    except Exception as e:
+        print(f"Error in personalized prediction: {e}")
+        return None
 
 def analyze_user_patterns(tasks):
     """Analyze user task patterns and provide insights"""
