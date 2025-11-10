@@ -558,19 +558,20 @@ def analyze_user_patterns(tasks):
 
     return insights
 
-if __name__ == '__main__':
-    # Try to load saved models first (much faster for cold starts)
-    print("Attempting to load saved ML models...")
-    models_loaded = load_models()
-    
-    if not models_loaded:
-        # If no saved models exist, train new ones
-        print("No saved models found. Training ML model...")
-        train_model()
-    else:
-        print("Successfully loaded saved models! (Cold start optimized)")
+# Initialize models when module is imported (works with both Flask dev server and Gunicorn)
+# This ensures models are loaded even when using Gunicorn (which doesn't run __main__)
+print("Initializing ML models...")
+models_loaded = load_models()
 
+if not models_loaded:
+    # If no saved models exist, train new ones
+    print("No saved models found. Training ML model...")
+    train_model()
+else:
+    print("Successfully loaded saved models! (Cold start optimized)")
+
+# Only run Flask dev server if script is executed directly (not when imported by Gunicorn)
+if __name__ == '__main__':
     # Get port from environment variable (Railway/Render sets this)
     port = int(os.environ.get('PORT', 5000))
-
     app.run(debug=False, host='0.0.0.0', port=port)
