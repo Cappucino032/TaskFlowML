@@ -8,6 +8,8 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 import os
 from datetime import datetime
+import joblib
+import json
 
 app = Flask(__name__)
 
@@ -36,6 +38,14 @@ model = None
 label_encoders = {}
 models_by_category = {}  # Store separate models for each category
 feature_columns = ['task_type', 'priority_level', 'estimated_duration', 'deadline_proximity', 'reschedule_frequency', 'productive_time', 'preferred_time', 'reminder_preference']
+
+# Model persistence paths
+MODELS_DIR = os.path.join(os.path.dirname(__file__), 'models')
+os.makedirs(MODELS_DIR, exist_ok=True)
+GENERAL_MODEL_PATH = os.path.join(MODELS_DIR, 'general_model.joblib')
+GENERAL_ENCODERS_PATH = os.path.join(MODELS_DIR, 'general_encoders.joblib')
+CATEGORY_MODELS_DIR = os.path.join(MODELS_DIR, 'categories')
+os.makedirs(CATEGORY_MODELS_DIR, exist_ok=True)
 
 def load_and_preprocess_data():
     """Load survey data and preprocess for ML training"""
@@ -94,6 +104,73 @@ def load_and_preprocess_data():
     except Exception as e:
         print(f"Error loading data: {e}")
         return None
+
+def save_models():
+    """Save trained models and encoders to disk for faster cold starts"""
+    try:
+        # Save general model and encoders
+        if model is not None:
+            joblib.dump(model, GENERAL_MODEL_PATH)
+            joblib.dump(label_encoders, GENERAL_ENCODERS_PATH)
+            print(f"Saved general model to {GENERAL_MODEL_PATH}")
+
+        # Save category-specific models
+        for category, category_data in models_by_category.items():
+            # Sanitize category name for filename
+            safe_category = "".join(c if c.isalnum() or c in (' ', '-', '_') else '_' for c in category)
+            category_model_path = os.path.join(CATEGORY_MODELS_DIR, f"{safe_category}_model.joblib")
+            category_encoders_path = os.path.join(CATEGORY_MODELS_DIR, f"{safe_category}_encoders.joblib")
+            
+            joblib.dump(category_data['model'], category_model_path)
+            joblib.dump(category_data['encoders'], category_encoders_path)
+            print(f"Saved model for category '{category}' to {category_model_path}")
+
+        return True
+    except Exception as e:
+        print(f"Error saving models: {e}")
+        return False
+
+def load_models():
+    """Load trained models and encoders from disk if they exist"""
+    global model, label_encoders, models_by_category
+    
+    try:
+        loaded_any = False
+        
+        # Load general model
+        if os.path.exists(GENERAL_MODEL_PATH) and os.path.exists(GENERAL_ENCODERS_PATH):
+            model = joblib.load(GENERAL_MODEL_PATH)
+            label_encoders = joblib.load(GENERAL_ENCODERS_PATH)
+            print(f"Loaded general model from {GENERAL_MODEL_PATH}")
+            loaded_any = True
+
+        # Load category-specific models
+        if os.path.exists(CATEGORY_MODELS_DIR):
+            for filename in os.listdir(CATEGORY_MODELS_DIR):
+                if filename.endswith('_model.joblib'):
+                    category_name = filename.replace('_model.joblib', '')
+                    encoders_filename = filename.replace('_model.joblib', '_encoders.joblib')
+                    
+                    model_path = os.path.join(CATEGORY_MODELS_DIR, filename)
+                    encoders_path = os.path.join(CATEGORY_MODELS_DIR, encoders_filename)
+                    
+                    if os.path.exists(encoders_path):
+                        category_model = joblib.load(model_path)
+                        category_encoders = joblib.load(encoders_path)
+                        
+                        # Try to get accuracy from a metadata file, or default to 0.8
+                        models_by_category[category_name] = {
+                            'model': category_model,
+                            'encoders': category_encoders,
+                            'accuracy': 0.8  # Default accuracy if not saved
+                        }
+                        print(f"Loaded model for category '{category_name}' from {model_path}")
+                        loaded_any = True
+
+        return loaded_any
+    except Exception as e:
+        print(f"Error loading models: {e}")
+        return False
 
 def train_model():
     """Train separate CART decision tree models for each category"""
@@ -183,6 +260,9 @@ def train_model():
     model.fit(X_train, y_train)
     accuracy = model.score(X_test, y_test)
     print(f"General model trained with accuracy: {accuracy:.2f}")
+
+    # Save models to disk for faster cold starts
+    save_models()
 
     return True
 
@@ -277,6 +357,14 @@ def health_check():
         "model_loaded": model is not None,
         "category_models": category_models_count,
         "categories": list(models_by_category.keys()) if models_by_category else []
+    })
+
+@app.route('/keepalive', methods=['GET'])
+def keepalive():
+    """Keep-alive endpoint to prevent Render free tier from sleeping"""
+    return jsonify({
+        "status": "awake",
+        "message": "Service is active"
     })
 
 @app.route('/train', methods=['POST'])
@@ -471,11 +559,18 @@ def analyze_user_patterns(tasks):
     return insights
 
 if __name__ == '__main__':
-    # Train model on startup
-    print("Training ML model...")
-    train_model()
+    # Try to load saved models first (much faster for cold starts)
+    print("Attempting to load saved ML models...")
+    models_loaded = load_models()
+    
+    if not models_loaded:
+        # If no saved models exist, train new ones
+        print("No saved models found. Training ML model...")
+        train_model()
+    else:
+        print("Successfully loaded saved models! (Cold start optimized)")
 
-    # Get port from environment variable (Railway sets this)
+    # Get port from environment variable (Railway/Render sets this)
     port = int(os.environ.get('PORT', 5000))
 
     app.run(debug=False, host='0.0.0.0', port=port)
