@@ -1,43 +1,28 @@
-# ML Backend for Task Scheduling Optimization
+# ML API for Personal Activity Scheduler
 
-This Python Flask backend provides machine learning-powered task scheduling recommendations using a CART (Classification and Regression Tree) decision tree model.
+This is the machine learning backend for the Personal Activity Scheduler React Native app, deployed on Railway.
 
-## Features
+## 🚀 Deployment Status
 
-- **CART Decision Tree Model**: Trained on survey data to predict optimal task scheduling times
-- **Real-time Predictions**: RESTful API for getting scheduling recommendations
-- **User Insights**: Personalized analytics based on task completion patterns
-- **Firebase Integration**: Direct connection to Firestore for user data
+**Railway URL**: [To be updated after deployment]
 
-## Setup
-
-1. **Install Dependencies**
-   ```bash
-   cd ml-backend
-   pip install -r requirements.txt
-   ```
-
-2. **Firebase Setup**
-   - Download your Firebase service account key
-   - Save it as `firebase-key.json` in the ml-backend directory
-
-3. **Run the Server**
-   ```bash
-   python app.py
-   ```
-
-## API Endpoints
+## 📊 API Endpoints
 
 ### GET /health
-Check if the service is running and model is loaded.
+Check service status and model loading.
 
-### POST /train
-Retrain the ML model with updated survey data.
+**Response:**
+```json
+{
+  "status": "healthy",
+  "model_loaded": true
+}
+```
 
 ### POST /predict
-Get optimal scheduling recommendations for a task.
+Get optimal task scheduling recommendations.
 
-**Request Body:**
+**Request:**
 ```json
 {
   "category": "Work",
@@ -56,32 +41,43 @@ Get optimal scheduling recommendations for a task.
 ```
 
 ### GET /insights/{user_id}
-Get personalized insights for a user based on their task history.
+Get personalized productivity insights.
 
-## ML Model Details
+### POST /train
+Retrain the ML model (admin only).
 
-The CART model is trained on survey responses that include:
-- Task types (Academic, Work, Personal, etc.)
-- Priority levels (High, Medium, Low)
-- Estimated durations
-- Deadline proximity preferences
-- Rescheduling frequency
-- Productive time preferences
-- Reminder preferences
+## 🔧 Local Development
 
-The model predicts the optimal time of day for scheduling tasks based on these features.
+```bash
+cd ml-api
+pip install -r requirements.txt
+python app.py
+```
 
-## Deployment
+## 🚀 Railway Deployment
 
-For production deployment, consider:
-- **Google Cloud Run** for serverless deployment
-- **Firebase Cloud Functions** for integrated Firebase deployment
-- **Docker** for containerized deployment
+The API is configured for Railway deployment with:
+- Automatic health checks
+- Environment variable support
+- Docker containerization
+- Production logging
 
-## Model Training
+## 📱 Integration
 
-The model is automatically trained when the server starts. To retrain with new data:
+Update your React Native app's ML service URL to point to the Railway deployment:
 
-1. Update the CSV file
-2. Call the `/train` endpoint
-3. The model will be updated with new predictions
+```typescript
+// In src/services/mlService.ts
+const API_BASE_URL = 'https://your-railway-app.up.railway.app';
+```
+
+## 🧪 Testing
+
+```bash
+# Health check
+curl https://your-app.up.railway.app/health
+
+# Test prediction
+curl -X POST https://your-app.up.railway.app/predict \
+  -H "Content-Type: application/json" \
+  -d '{"category": "Work", "priority": 3}'
