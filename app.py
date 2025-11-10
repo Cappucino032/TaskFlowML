@@ -34,6 +34,7 @@ except Exception as e:
 # Global variables for ML model
 model = None
 label_encoders = {}
+models_by_category = {}  # Store separate models for each category
 feature_columns = ['task_type', 'priority_level', 'estimated_duration', 'deadline_proximity', 'reschedule_frequency', 'productive_time', 'preferred_time', 'reminder_preference']
 
 def load_and_preprocess_data():
@@ -95,14 +96,69 @@ def load_and_preprocess_data():
         return None
 
 def train_model():
-    """Train the CART decision tree model"""
-    global model, label_encoders
+    """Train separate CART decision tree models for each category"""
+    global model, label_encoders, models_by_category
 
     df = load_and_preprocess_data()
     if df is None:
         return False
 
-    # Encode categorical variables
+    # Get unique categories from the data
+    categories = df['task_type'].unique()
+    print(f"Training models for categories: {list(categories)}")
+
+    models_by_category = {}
+
+    for category in categories:
+        print(f"Training model for category: {category}")
+
+        # Filter data for this category
+        category_df = df[df['task_type'] == category].copy()
+
+        if len(category_df) < 5:  # Skip if too few samples
+            print(f"Skipping {category} - insufficient data ({len(category_df)} samples)")
+            continue
+
+        # Encode categorical variables for this category
+        category_encoders = {}
+        encoded_df = category_df.copy()
+
+        for column in feature_columns + ['optimal_schedule_time']:
+            if column in encoded_df.columns:
+                le = LabelEncoder()
+                encoded_df[column] = le.fit_transform(encoded_df[column].astype(str))
+                category_encoders[column] = le
+
+        # Prepare features and target
+        X = encoded_df[feature_columns]
+        y = encoded_df['optimal_schedule_time']
+
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+        # Train CART model (Decision Tree) for this category
+        category_model = DecisionTreeClassifier(
+            criterion='gini',
+            max_depth=5,
+            min_samples_split=2,
+            min_samples_leaf=1,
+            random_state=42
+        )
+
+        category_model.fit(X_train, y_train)
+
+        # Calculate accuracy
+        accuracy = category_model.score(X_test, y_test)
+        print(f"Model for {category} trained with accuracy: {accuracy:.2f}")
+
+        # Store model and encoders
+        models_by_category[category] = {
+            'model': category_model,
+            'encoders': category_encoders,
+            'accuracy': accuracy
+        }
+
+    # Keep a general model as fallback
     label_encoders = {}
     encoded_df = df.copy()
 
@@ -112,14 +168,10 @@ def train_model():
             encoded_df[column] = le.fit_transform(encoded_df[column].astype(str))
             label_encoders[column] = le
 
-    # Prepare features and target
     X = encoded_df[feature_columns]
     y = encoded_df['optimal_schedule_time']
-
-    # Split data
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-    # Train CART model (Decision Tree)
     model = DecisionTreeClassifier(
         criterion='gini',
         max_depth=5,
@@ -129,54 +181,103 @@ def train_model():
     )
 
     model.fit(X_train, y_train)
-
-    # Calculate accuracy
     accuracy = model.score(X_test, y_test)
-    print(f"Model trained with accuracy: {accuracy:.2f}")
+    print(f"General model trained with accuracy: {accuracy:.2f}")
 
     return True
 
 def predict_optimal_schedule(task_features):
-    """Predict optimal scheduling time for a task"""
-    if model is None:
-        return {"error": "Model not trained"}
+    """Predict optimal scheduling time for a task using category-specific model"""
+    if not models_by_category and model is None:
+        return {"error": "Models not trained"}
 
     try:
-        # Encode input features
-        encoded_features = []
-        for feature in feature_columns:
-            value = task_features.get(feature, 'Unknown')
-            if feature in label_encoders:
-                try:
-                    encoded_value = label_encoders[feature].transform([str(value)])[0]
-                except:
-                    # Handle unknown categories
-                    encoded_value = 0
-                encoded_features.append(encoded_value)
+        task_category = task_features.get('task_type', 'Personal')
+
+        # Try to use category-specific model first
+        if task_category in models_by_category:
+            category_data = models_by_category[task_category]
+            category_model = category_data['model']
+            category_encoders = category_data['encoders']
+
+            # Encode input features using category-specific encoders
+            encoded_features = []
+            for feature in feature_columns:
+                value = task_features.get(feature, 'Unknown')
+                if feature in category_encoders:
+                    try:
+                        encoded_value = category_encoders[feature].transform([str(value)])[0]
+                    except:
+                        # Handle unknown categories
+                        encoded_value = 0
+                    encoded_features.append(encoded_value)
+                else:
+                    encoded_features.append(0)
+
+            # Make prediction with category-specific model
+            prediction = category_model.predict([encoded_features])[0]
+
+            # Decode prediction
+            if 'optimal_schedule_time' in category_encoders:
+                predicted_time = category_encoders['optimal_schedule_time'].inverse_transform([prediction])[0]
             else:
-                encoded_features.append(0)
+                predicted_time = "Unknown"
 
-        # Make prediction
-        prediction = model.predict([encoded_features])[0]
+            confidence = float(category_model.predict_proba([encoded_features]).max())
 
-        # Decode prediction
-        if 'optimal_schedule_time' in label_encoders:
-            predicted_time = label_encoders['optimal_schedule_time'].inverse_transform([prediction])[0]
+            return {
+                "optimal_time": predicted_time,
+                "confidence": confidence,
+                "model_used": f"category-specific ({task_category})",
+                "features_used": task_features
+            }
         else:
-            predicted_time = "Unknown"
+            # Fall back to general model
+            print(f"No specific model for category {task_category}, using general model")
 
-        return {
-            "optimal_time": predicted_time,
-            "confidence": float(model.predict_proba([encoded_features]).max()),
-            "features_used": task_features
-        }
+            encoded_features = []
+            for feature in feature_columns:
+                value = task_features.get(feature, 'Unknown')
+                if feature in label_encoders:
+                    try:
+                        encoded_value = label_encoders[feature].transform([str(value)])[0]
+                    except:
+                        # Handle unknown categories
+                        encoded_value = 0
+                    encoded_features.append(encoded_value)
+                else:
+                    encoded_features.append(0)
+
+            # Make prediction with general model
+            prediction = model.predict([encoded_features])[0]
+
+            # Decode prediction
+            if 'optimal_schedule_time' in label_encoders:
+                predicted_time = label_encoders['optimal_schedule_time'].inverse_transform([prediction])[0]
+            else:
+                predicted_time = "Unknown"
+
+            confidence = float(model.predict_proba([encoded_features]).max())
+
+            return {
+                "optimal_time": predicted_time,
+                "confidence": confidence,
+                "model_used": "general",
+                "features_used": task_features
+            }
 
     except Exception as e:
         return {"error": str(e)}
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    return jsonify({"status": "healthy", "model_loaded": model is not None})
+    category_models_count = len(models_by_category) if models_by_category else 0
+    return jsonify({
+        "status": "healthy",
+        "model_loaded": model is not None,
+        "category_models": category_models_count,
+        "categories": list(models_by_category.keys()) if models_by_category else []
+    })
 
 @app.route('/train', methods=['POST'])
 def train():
