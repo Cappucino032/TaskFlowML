@@ -560,15 +560,23 @@ def analyze_user_patterns(tasks):
 
 # Initialize models when module is imported (works with both Flask dev server and Gunicorn)
 # This ensures models are loaded even when using Gunicorn (which doesn't run __main__)
-print("Initializing ML models...")
-models_loaded = load_models()
+# Wrap in try-except to ensure app starts even if model loading fails
+try:
+    print("Initializing ML models...")
+    models_loaded = load_models()
 
-if not models_loaded:
-    # If no saved models exist, train new ones
-    print("No saved models found. Training ML model...")
-    train_model()
-else:
-    print("Successfully loaded saved models! (Cold start optimized)")
+    if not models_loaded:
+        # If no saved models exist, train new ones
+        print("No saved models found. Training ML model...")
+        train_model()
+    else:
+        print("Successfully loaded saved models! (Cold start optimized)")
+except Exception as e:
+    print(f"Warning: Model initialization failed: {e}")
+    print("App will continue to run, but ML predictions may not work until models are trained.")
+    # Set models to None so the app knows they're not loaded
+    model = None
+    models_by_category = {}
 
 # Only run Flask dev server if script is executed directly (not when imported by Gunicorn)
 if __name__ == '__main__':
