@@ -41,9 +41,10 @@ def load_and_preprocess_data():
     try:
         # Try multiple possible paths for the CSV file
         possible_paths = [
-            '../Survey Questions for ML Training Data.csv',
             './data/Survey Questions for ML Training Data.csv',
             'Survey Questions for ML Training Data.csv',
+            '../Survey Questions for ML Training Data.csv',
+            os.path.join(os.path.dirname(__file__), 'data', 'Survey Questions for ML Training Data.csv'),
             os.path.join(os.path.dirname(__file__), '..', 'Survey Questions for ML Training Data.csv')
         ]
 
