@@ -359,13 +359,17 @@ def health_check():
         "categories": list(models_by_category.keys()) if models_by_category else []
     })
 
-@app.route('/keepalive', methods=['GET'])
+@app.route('/keepalive', methods=['GET', 'HEAD'])
 def keepalive():
     """Keep-alive endpoint to prevent Render free tier from sleeping"""
-    return jsonify({
+    response = jsonify({
         "status": "awake",
         "message": "Service is active"
     })
+    # Handle HEAD requests (used by monitoring services like UptimeRobot)
+    if request.method == 'HEAD':
+        return '', 200
+    return response
 
 @app.route('/train', methods=['POST'])
 def train():
