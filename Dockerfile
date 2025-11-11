@@ -26,8 +26,8 @@ RUN mkdir -p ./data
 # Copy data directory if it exists in the build context
 COPY data/ ./data/
 
-# Copy CSV file from root if it exists
-COPY "Survey Questions for ML Training Data.csv" ./
+# Copy CSV file from root (filename has spaces, so we copy all CSV files)
+COPY *.csv ./
 
 # Create directory for Firebase key (optional)
 RUN mkdir -p /app/keys
