@@ -23,11 +23,8 @@ COPY app.py .
 RUN mkdir -p ./data
 
 # Copy CSV files - app.py handles multiple path locations
-# Copy data directory if it exists in the build context
+# Copy data directory (contains the CSV file)
 COPY data/ ./data/
-
-# Copy CSV file from root (filename has spaces, so we copy all CSV files)
-COPY *.csv ./
 
 # Create directory for Firebase key (optional)
 RUN mkdir -p /app/keys
