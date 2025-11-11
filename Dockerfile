@@ -22,12 +22,12 @@ COPY app.py .
 # Create data directory
 RUN mkdir -p ./data
 
-# Copy CSV file - app.py handles multiple path locations
-# Copy data directory if it exists
-COPY data/ ./data/ 2>/dev/null || true
+# Copy CSV files - app.py handles multiple path locations
+# Copy data directory if it exists in the build context
+COPY data/ ./data/
 
-# Copy CSV from root if it exists (app.py will find it)
-COPY *.csv ./ 2>/dev/null || true
+# Copy CSV file from root if it exists
+COPY "Survey Questions for ML Training Data.csv" ./
 
 # Create directory for Firebase key (optional)
 RUN mkdir -p /app/keys
