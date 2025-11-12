@@ -20,10 +20,19 @@ try:
     firebase_key_json = os.environ.get('FIREBASE_KEY_JSON')
     if firebase_key_json:
         print(f"Found FIREBASE_KEY_JSON environment variable (length: {len(firebase_key_json)})")
+        print(f"First 50 chars: {firebase_key_json[:50]}")
         try:
+            # Strip whitespace and newlines that Render might add
+            firebase_key_json = firebase_key_json.strip()
             # Parse JSON from environment variable
             key_data = json.loads(firebase_key_json)
             print("Successfully parsed JSON from environment variable")
+            # Verify it has required fields
+            if 'type' not in key_data or key_data.get('type') != 'service_account':
+                raise ValueError("Invalid service account key: missing or incorrect 'type' field")
+            if 'private_key' not in key_data:
+                raise ValueError("Invalid service account key: missing 'private_key' field")
+            print("Service account key structure validated")
             cred = credentials.Certificate(key_data)
             firebase_admin.initialize_app(cred)
             db = firestore.client()
@@ -32,6 +41,10 @@ try:
         except json.JSONDecodeError as json_err:
             print(f"Failed to parse JSON from environment variable: {json_err}")
             print(f"First 100 chars of value: {firebase_key_json[:100]}")
+            print(f"Last 50 chars of value: {firebase_key_json[-50:]}")
+            raise
+        except Exception as parse_err:
+            print(f"Error processing Firebase key from environment variable: {parse_err}")
             raise
     else:
         print("FIREBASE_KEY_JSON environment variable not found")
@@ -370,6 +383,34 @@ def predict_optimal_schedule(task_features):
 
     except Exception as e:
         return {"error": str(e)}
+
+@app.route('/debug/firebase', methods=['GET'])
+def debug_firebase():
+    """Debug endpoint to check Firebase configuration status"""
+    firebase_key_json = os.environ.get('FIREBASE_KEY_JSON')
+    firebase_key_path = os.environ.get('FIREBASE_KEY_PATH', 'firebase-key.json')
+    
+    debug_info = {
+        'firebase_enabled': firebase_enabled,
+        'has_env_var': firebase_key_json is not None,
+        'env_var_length': len(firebase_key_json) if firebase_key_json else 0,
+        'env_var_starts_with': firebase_key_json[:50] if firebase_key_json else None,
+        'has_file_path_env': os.environ.get('FIREBASE_KEY_PATH') is not None,
+        'file_exists': os.path.exists(firebase_key_path) if firebase_key_path else False,
+        'all_env_vars': [k for k in os.environ.keys() if 'FIREBASE' in k.upper()],
+    }
+    
+    # Try to parse if env var exists
+    if firebase_key_json:
+        try:
+            test_parse = json.loads(firebase_key_json)
+            debug_info['json_parse_success'] = True
+            debug_info['json_has_type'] = test_parse.get('type') == 'service_account'
+        except Exception as e:
+            debug_info['json_parse_success'] = False
+            debug_info['json_parse_error'] = str(e)
+    
+    return jsonify(debug_info)
 
 @app.route('/health', methods=['GET'])
 def health_check():
