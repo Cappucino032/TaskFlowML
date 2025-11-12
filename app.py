@@ -19,16 +19,25 @@ try:
     # Option 1: Check for environment variable with JSON content (for production/Render)
     firebase_key_json = os.environ.get('FIREBASE_KEY_JSON')
     if firebase_key_json:
-        # Parse JSON from environment variable
-        key_data = json.loads(firebase_key_json)
-        cred = credentials.Certificate(key_data)
-        firebase_admin.initialize_app(cred)
-        db = firestore.client()
-        firebase_enabled = True
-        print("Firebase initialized successfully from environment variable")
+        print(f"Found FIREBASE_KEY_JSON environment variable (length: {len(firebase_key_json)})")
+        try:
+            # Parse JSON from environment variable
+            key_data = json.loads(firebase_key_json)
+            print("Successfully parsed JSON from environment variable")
+            cred = credentials.Certificate(key_data)
+            firebase_admin.initialize_app(cred)
+            db = firestore.client()
+            firebase_enabled = True
+            print("Firebase initialized successfully from environment variable")
+        except json.JSONDecodeError as json_err:
+            print(f"Failed to parse JSON from environment variable: {json_err}")
+            print(f"First 100 chars of value: {firebase_key_json[:100]}")
+            raise
     else:
+        print("FIREBASE_KEY_JSON environment variable not found")
         # Option 2: Fall back to file path (for local development)
         firebase_key_path = os.environ.get('FIREBASE_KEY_PATH', 'firebase-key.json')
+        print(f"Checking for Firebase key file at: {firebase_key_path}")
         if os.path.exists(firebase_key_path):
             cred = credentials.Certificate(firebase_key_path)
             firebase_admin.initialize_app(cred)
@@ -36,11 +45,13 @@ try:
             firebase_enabled = True
             print("Firebase initialized successfully from file")
         else:
-            print("Firebase key not found - running in offline mode")
+            print(f"Firebase key file not found at {firebase_key_path} - running in offline mode")
             firebase_enabled = False
             db = None
 except Exception as e:
     print(f"Firebase initialization failed: {e} - running in offline mode")
+    import traceback
+    traceback.print_exc()
     firebase_enabled = False
     db = None
 
