@@ -14,20 +14,31 @@ import json
 app = Flask(__name__)
 
 # Initialize Firebase Admin SDK
-# Note: You'll need to add your Firebase service account key as 'firebase-key.json'
+# Supports both environment variable (production) and file path (local development)
 try:
-    # Check for Railway environment variable or local file
-    firebase_key_path = os.environ.get('FIREBASE_KEY_PATH', 'firebase-key.json')
-    if os.path.exists(firebase_key_path):
-        cred = credentials.Certificate(firebase_key_path)
+    # Option 1: Check for environment variable with JSON content (for production/Render)
+    firebase_key_json = os.environ.get('FIREBASE_KEY_JSON')
+    if firebase_key_json:
+        # Parse JSON from environment variable
+        key_data = json.loads(firebase_key_json)
+        cred = credentials.Certificate(key_data)
         firebase_admin.initialize_app(cred)
         db = firestore.client()
         firebase_enabled = True
-        print("Firebase initialized successfully")
+        print("Firebase initialized successfully from environment variable")
     else:
-        print("Firebase key not found - running in offline mode")
-        firebase_enabled = False
-        db = None
+        # Option 2: Fall back to file path (for local development)
+        firebase_key_path = os.environ.get('FIREBASE_KEY_PATH', 'firebase-key.json')
+        if os.path.exists(firebase_key_path):
+            cred = credentials.Certificate(firebase_key_path)
+            firebase_admin.initialize_app(cred)
+            db = firestore.client()
+            firebase_enabled = True
+            print("Firebase initialized successfully from file")
+        else:
+            print("Firebase key not found - running in offline mode")
+            firebase_enabled = False
+            db = None
 except Exception as e:
     print(f"Firebase initialization failed: {e} - running in offline mode")
     firebase_enabled = False
@@ -409,7 +420,19 @@ def predict():
 def get_user_insights(user_id):
     """Get personalized insights for a user based on their task history"""
     if not firebase_enabled:
-        return jsonify({"insights": ["Firebase not configured - cannot access user data"]})
+        # Provide fallback insights when Firebase is not configured
+        # Don't show error message to user, just provide helpful general insights
+        fallback_insights = [
+            "Based on general productivity patterns, morning hours (6 AM - 12 PM) tend to be most productive for most users.",
+            "Breaking tasks into smaller, manageable chunks can improve completion rates.",
+            "Setting specific start and end times for tasks helps maintain focus and productivity.",
+            "Regular breaks between tasks can help maintain energy levels throughout the day.",
+            "Prioritizing high-importance tasks earlier in the day can lead to better outcomes."
+        ]
+        return jsonify({
+            "insights": fallback_insights,
+            "total_tasks": 0
+        })
 
     try:
         # Get user's tasks from Firestore
@@ -423,7 +446,16 @@ def get_user_insights(user_id):
             task_data.append(task_dict)
 
         if not task_data:
-            return jsonify({"insights": ["No task history available yet. Complete some tasks to see insights!"]})
+            # Provide helpful insights even when user has no tasks yet
+            return jsonify({
+                "insights": [
+                    "No task history available yet. Complete some tasks to see personalized insights!",
+                    "Start by creating tasks with specific start and end times.",
+                    "Mark tasks as complete to help the AI learn your productivity patterns.",
+                    "Use the calendar view to visualize your task schedule."
+                ],
+                "total_tasks": 0
+            })
 
         # Analyze patterns
         insights = analyze_user_patterns(task_data)
@@ -431,7 +463,18 @@ def get_user_insights(user_id):
         return jsonify({"insights": insights, "total_tasks": len(task_data)})
 
     except Exception as e:
-        return jsonify({"error": str(e)})
+        # Provide fallback insights on error
+        fallback_insights = [
+            "Unable to load personalized insights at this time.",
+            "General tip: Schedule tasks during your most productive hours.",
+            "Break large tasks into smaller, manageable pieces.",
+            "Set reminders to stay on track with your schedule."
+        ]
+        return jsonify({
+            "insights": fallback_insights,
+            "total_tasks": 0,
+            "error": str(e)
+        })
 
 def predict_from_user_history(user_id, task_data):
     """Predict optimal schedule based on user's own completed task history"""
