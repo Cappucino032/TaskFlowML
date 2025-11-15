@@ -6,10 +6,13 @@ from sklearn.preprocessing import LabelEncoder
 import numpy as np
 import firebase_admin
 from firebase_admin import credentials, firestore
+from google.cloud.firestore_v1.base_query import FieldFilter
 import os
 from datetime import datetime
 import joblib
 import json
+import warnings
+from warnings import UserWarning
 
 app = Flask(__name__)
 
@@ -249,15 +252,17 @@ def train_model():
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
         # Train CART model (Decision Tree) for this category
-        category_model = DecisionTreeClassifier(
-            criterion='gini',
-            max_depth=5,
-            min_samples_split=2,
-            min_samples_leaf=1,
-            random_state=42
-        )
-
-        category_model.fit(X_train, y_train)
+        # Suppress sklearn feature name warnings
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', category=UserWarning, module='sklearn')
+            category_model = DecisionTreeClassifier(
+                criterion='gini',
+                max_depth=5,
+                min_samples_split=2,
+                min_samples_leaf=1,
+                random_state=42
+            )
+            category_model.fit(X_train, y_train)
 
         # Calculate accuracy
         accuracy = category_model.score(X_test, y_test)
@@ -284,15 +289,17 @@ def train_model():
     y = encoded_df['optimal_schedule_time']
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-    model = DecisionTreeClassifier(
-        criterion='gini',
-        max_depth=5,
-        min_samples_split=2,
-        min_samples_leaf=1,
-        random_state=42
-    )
-
-    model.fit(X_train, y_train)
+    # Suppress sklearn feature name warnings for general model
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', category=UserWarning, module='sklearn')
+        model = DecisionTreeClassifier(
+            criterion='gini',
+            max_depth=5,
+            min_samples_split=2,
+            min_samples_leaf=1,
+            random_state=42
+        )
+        model.fit(X_train, y_train)
     accuracy = model.score(X_test, y_test)
     print(f"General model trained with accuracy: {accuracy:.2f}")
 
@@ -330,15 +337,17 @@ def predict_optimal_schedule(task_features):
                     encoded_features.append(0)
 
             # Make prediction with category-specific model
-            prediction = category_model.predict([encoded_features])[0]
+            # Suppress sklearn feature name warnings during prediction
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', category=UserWarning, module='sklearn')
+                prediction = category_model.predict([encoded_features])[0]
+                confidence = float(category_model.predict_proba([encoded_features]).max())
 
             # Decode prediction
             if 'optimal_schedule_time' in category_encoders:
                 predicted_time = category_encoders['optimal_schedule_time'].inverse_transform([prediction])[0]
             else:
                 predicted_time = "Unknown"
-
-            confidence = float(category_model.predict_proba([encoded_features]).max())
 
             return {
                 "optimal_time": predicted_time,
@@ -364,7 +373,10 @@ def predict_optimal_schedule(task_features):
                     encoded_features.append(0)
 
             # Make prediction with general model
-            prediction = model.predict([encoded_features])[0]
+            # Suppress sklearn feature name warnings during prediction
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', category=UserWarning, module='sklearn')
+                prediction = model.predict([encoded_features])[0]
 
             # Decode prediction
             if 'optimal_schedule_time' in label_encoders:
@@ -372,7 +384,10 @@ def predict_optimal_schedule(task_features):
             else:
                 predicted_time = "Unknown"
 
-            confidence = float(model.predict_proba([encoded_features]).max())
+            # Suppress sklearn warnings for predict_proba as well
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', category=UserWarning, module='sklearn')
+                confidence = float(model.predict_proba([encoded_features]).max())
 
             return {
                 "optimal_time": predicted_time,
@@ -487,8 +502,8 @@ def get_user_insights(user_id):
         })
 
     try:
-        # Get user's tasks from Firestore
-        tasks_ref = db.collection('tasks').where('userId', '==', user_id)
+        # Get user's tasks from Firestore (using filter keyword to avoid deprecation warning)
+        tasks_ref = db.collection('tasks').where(filter=FieldFilter('userId', '==', user_id))
         tasks = tasks_ref.stream()
 
         task_data = []
@@ -531,8 +546,8 @@ def get_user_insights(user_id):
 def predict_from_user_history(user_id, task_data):
     """Predict optimal schedule based on user's own completed task history"""
     try:
-        # Get user's completed tasks
-        tasks_ref = db.collection('tasks').where('userId', '==', user_id).where('completed', '==', True)
+        # Get user's completed tasks (using filter keyword to avoid deprecation warning)
+        tasks_ref = db.collection('tasks').where(filter=FieldFilter('userId', '==', user_id)).where(filter=FieldFilter('completed', '==', True))
         tasks = tasks_ref.stream()
 
         completed_tasks = []
@@ -544,8 +559,8 @@ def predict_from_user_history(user_id, task_data):
         if len(completed_tasks) < 3:
             return None  # Not enough data for personalized prediction
 
-        # Get productivity logs for completion times
-        productivity_ref = db.collection('productivityLogs').where('userId', '==', user_id)
+        # Get productivity logs for completion times (using filter keyword to avoid deprecation warning)
+        productivity_ref = db.collection('productivityLogs').where(filter=FieldFilter('userId', '==', user_id))
         logs = productivity_ref.stream()
 
         completion_data = {}
