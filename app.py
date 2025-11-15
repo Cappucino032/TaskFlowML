@@ -253,8 +253,7 @@ def train_model():
         # Train CART model (Decision Tree) for this category
         # Suppress sklearn feature name warnings
         with warnings.catch_warnings():
-            # UserWarning is a built-in class, available directly
-            warnings.filterwarnings('ignore', category=UserWarning, module='sklearn')
+            warnings.filterwarnings('ignore', module='sklearn')
             category_model = DecisionTreeClassifier(
                 criterion='gini',
                 max_depth=5,
@@ -291,8 +290,7 @@ def train_model():
 
     # Suppress sklearn feature name warnings for general model
     with warnings.catch_warnings():
-        # UserWarning is a built-in class, available directly
-        warnings.filterwarnings('ignore', category=UserWarning, module='sklearn')
+        warnings.filterwarnings('ignore', module='sklearn')
         model = DecisionTreeClassifier(
             criterion='gini',
             max_depth=5,
