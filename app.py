@@ -506,10 +506,14 @@ def get_user_insights(user_id):
         tasks = tasks_ref.stream()
 
         task_data = []
+        completed_tasks = []
         for task in tasks:
             task_dict = task.to_dict()
             task_dict['id'] = task.id
             task_data.append(task_dict)
+            # Count only completed tasks for analysis
+            if task_dict.get('completed', False):
+                completed_tasks.append(task_dict)
 
         if not task_data:
             # Provide helpful insights even when user has no tasks yet
@@ -523,10 +527,11 @@ def get_user_insights(user_id):
                 "total_tasks": 0
             })
 
-        # Analyze patterns
-        insights = analyze_user_patterns(task_data)
+        # Analyze patterns using completed tasks only
+        insights = analyze_user_patterns(completed_tasks if completed_tasks else task_data)
 
-        return jsonify({"insights": insights, "total_tasks": len(task_data)})
+        # Return total completed tasks analyzed (not all tasks)
+        return jsonify({"insights": insights, "total_tasks": len(completed_tasks)})
 
     except Exception as e:
         # Provide fallback insights on error
