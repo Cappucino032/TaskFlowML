@@ -253,7 +253,7 @@ def train_model():
         # Train CART model (Decision Tree) for this category
         # Suppress sklearn feature name warnings
         with warnings.catch_warnings():
-            warnings.filterwarnings('ignore', category=warnings.UserWarning, module='sklearn')
+            warnings.filterwarnings('ignore', category='UserWarning', module='sklearn')
             category_model = DecisionTreeClassifier(
                 criterion='gini',
                 max_depth=5,
@@ -338,7 +338,7 @@ def predict_optimal_schedule(task_features):
             # Make prediction with category-specific model
             # Suppress sklearn feature name warnings during prediction
             with warnings.catch_warnings():
-                warnings.filterwarnings('ignore', category=warnings.UserWarning, module='sklearn')
+                warnings.filterwarnings('ignore', category='UserWarning', module='sklearn')
                 prediction = category_model.predict([encoded_features])[0]
                 confidence = float(category_model.predict_proba([encoded_features]).max())
 
@@ -374,7 +374,7 @@ def predict_optimal_schedule(task_features):
             # Make prediction with general model
             # Suppress sklearn feature name warnings during prediction
             with warnings.catch_warnings():
-                warnings.filterwarnings('ignore', category=warnings.UserWarning, module='sklearn')
+                warnings.filterwarnings('ignore', category='UserWarning', module='sklearn')
                 prediction = model.predict([encoded_features])[0]
 
             # Decode prediction
@@ -385,7 +385,7 @@ def predict_optimal_schedule(task_features):
 
             # Suppress sklearn warnings for predict_proba as well
             with warnings.catch_warnings():
-                warnings.filterwarnings('ignore', category=warnings.UserWarning, module='sklearn')
+                warnings.filterwarnings('ignore', category='UserWarning', module='sklearn')
                 confidence = float(model.predict_proba([encoded_features]).max())
 
             return {
