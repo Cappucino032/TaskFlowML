@@ -671,15 +671,19 @@ def predict_from_user_history(user_id, task_data):
                 best_hour = max(hour_counts, key=hour_counts.get)
                 confidence = hour_counts[best_hour] / len(category_data)
 
-                # Convert hour to time period
-                if 6 <= best_hour < 12:
+                # Convert hour to time period (matching frontend heatmap segments)
+                # Late Night: 0-5 (12am-6am)
+                # Morning: 6-11 (6am-12pm)
+                # Afternoon: 12-17 (12pm-6pm)
+                # Evening: 18-23 (6pm-12am)
+                if 0 <= best_hour < 6:
+                    time_period = "Late Night (12 MN – 6 AM)"
+                elif 6 <= best_hour < 12:
                     time_period = "Morning (6 AM – 12 NN)"
                 elif 12 <= best_hour < 18:
                     time_period = "Afternoon (12 NN – 6 PM)"
-                elif 18 <= best_hour < 24:
+                else:  # 18-23
                     time_period = "Evening (6 PM – 12 MN)"
-                else:
-                    time_period = "Late Night (12 MN – 3 AM)"
 
                 return {
                     "optimal_time": time_period,
