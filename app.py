@@ -527,8 +527,8 @@ def get_user_insights(user_id):
                 "total_tasks": 0
             })
 
-        # Analyze patterns using completed tasks only
-        insights = analyze_user_patterns(completed_tasks if completed_tasks else task_data)
+        # Analyze patterns using completed tasks for behavior but include all tasks for completion rate
+        insights = analyze_user_patterns(task_data, completed_tasks)
 
         # Return total completed tasks analyzed (not all tasks)
         return jsonify({"insights": insights, "total_tasks": len(completed_tasks)})
@@ -547,6 +547,29 @@ def get_user_insights(user_id):
             "error": str(e)
         })
 
+def coerce_to_datetime(value):
+    """Best-effort conversion of various timestamp formats to datetime"""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if hasattr(value, 'to_pydatetime'):
+        return value.to_pydatetime()
+    if isinstance(value, dict) and 'seconds' in value:
+        seconds = value.get('seconds', 0)
+        nanos = value.get('nanoseconds', 0)
+        return datetime.fromtimestamp(seconds + nanos / 1_000_000_000)
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value)
+    if isinstance(value, str):
+        try:
+            normalized = value.replace('Z', '+00:00')
+            return datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+    return None
+
+
 def predict_from_user_history(user_id, task_data):
     """Predict optimal schedule based on user's own completed task history"""
     try:
@@ -561,18 +584,30 @@ def predict_from_user_history(user_id, task_data):
             completed_tasks.append(task_dict)
 
         if len(completed_tasks) < 3:
-            return None  # Not enough data for personalized prediction
-
-        # Get productivity logs for completion times (using filter keyword to avoid deprecation warning)
-        productivity_ref = db.collection('productivityLogs').where(filter=FieldFilter('userId', '==', user_id))
-        logs = productivity_ref.stream()
+            return {
+                "insufficient_data": True,
+                "message": "Complete at least 3 tasks to unlock personalized AI recommendations."
+            }
 
         completion_data = {}
-        for log in logs:
-            log_dict = log.to_dict()
-            task_id = log_dict.get('taskId')
-            if task_id:
-                completion_data[task_id] = log_dict
+        productivity_sources = [
+            ('productivity_logs', 'user_id'),
+            ('productivityLogs', 'userId'),
+        ]
+
+        for collection_name, field_name in productivity_sources:
+            try:
+                logs_ref = db.collection(collection_name).where(filter=FieldFilter(field_name, '==', user_id))
+                logs = logs_ref.stream()
+            except Exception as log_error:
+                print(f"Skipping productivity collection {collection_name}: {log_error}")
+                continue
+
+            for log in logs:
+                log_dict = log.to_dict()
+                task_id = log_dict.get('task_id') or log_dict.get('taskId')
+                if task_id and task_id not in completion_data:
+                    completion_data[task_id] = log_dict
 
         # Analyze patterns by category
         category_patterns = {}
@@ -589,14 +624,30 @@ def predict_from_user_history(user_id, task_data):
 
             # Extract completion time (prefer actual log data, fallback to due date)
             completed_at = None
-            if log_data.get('completedAt'):
-                completed_at = log_data['completedAt']
-            elif task.get('dueAt'):
-                # Assume completed near due date if no log
-                due_date = task['dueAt']
-                if isinstance(due_date, str):
-                    due_date = datetime.fromisoformat(due_date.replace('Z', '+00:00'))
-                completed_at = due_date
+            completed_at = coerce_to_datetime(
+                log_data.get('completion_at') or
+                log_data.get('completedAt') or
+                log_data.get('completed_time')
+            )
+
+            if completed_at is None:
+                completed_at = coerce_to_datetime(
+                    task.get('completedAt') or
+                    task.get('completed_at')
+                )
+
+            if completed_at is None:
+                completed_at = coerce_to_datetime(
+                    task.get('startTime') or
+                    task.get('start_time')
+                )
+
+            if completed_at is None:
+                completed_at = coerce_to_datetime(
+                    task.get('dueAt') or
+                    task.get('dueDate') or
+                    task.get('due_at')
+                )
 
             if completed_at:
                 completion_hour = completed_at.hour
@@ -644,18 +695,24 @@ def predict_from_user_history(user_id, task_data):
         print(f"Error in personalized prediction: {e}")
         return None
 
-def analyze_user_patterns(tasks):
+def analyze_user_patterns(all_tasks, completed_tasks=None):
     """Analyze user task patterns and provide insights"""
     insights = []
 
-    # Completion rate
-    completed_tasks = [t for t in tasks if t.get('completed', False)]
-    completion_rate = len(completed_tasks) / len(tasks) if tasks else 0
+    # Normalize inputs
+    if completed_tasks is None:
+        completed_tasks = [t for t in all_tasks if t.get('completed', False)]
+
+    total_tasks = len(all_tasks)
+    completed_count = len(completed_tasks)
+
+    # Completion rate (use all tasks for denominator)
+    completion_rate = completed_count / total_tasks if total_tasks else 0
     insights.append(f"Task completion rate: {completion_rate:.1%}")
 
     # Priority analysis
     priority_counts = {}
-    for task in tasks:
+    for task in completed_tasks if completed_tasks else all_tasks:
         priority = task.get('priority', 2)
         priority_counts[priority] = priority_counts.get(priority, 0) + 1
 
@@ -666,7 +723,7 @@ def analyze_user_patterns(tasks):
 
     # Category analysis
     category_counts = {}
-    for task in tasks:
+    for task in completed_tasks if completed_tasks else all_tasks:
         category = task.get('category', 'Personal')
         category_counts[category] = category_counts.get(category, 0) + 1
 
