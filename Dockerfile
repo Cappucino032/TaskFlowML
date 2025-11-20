@@ -40,5 +40,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:5000/health || exit 1
 
 # Run the application with Gunicorn for production
-# Use 1 worker with 1 thread to minimize memory usage, timeout 120s, restart workers after 50 requests to prevent memory leaks
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "1", "--timeout", "120", "--worker-class", "sync", "--threads", "1", "--max-requests", "50", "--max-requests-jitter", "10", "--access-logfile", "-", "--error-logfile", "-", "app:app"]
+# Use 1 worker with 2 threads to reduce memory usage, timeout 180s for cold starts and large queries
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "1", "--timeout", "180", "--worker-class", "sync", "--threads", "2", "--access-logfile", "-", "--error-logfile", "-", "app:app"]
