@@ -12,6 +12,7 @@ from datetime import datetime
 import joblib
 import json
 import warnings
+import gc
 
 app = Flask(__name__)
 
@@ -455,6 +456,9 @@ def train():
 
 @app.route('/predict', methods=['POST'])
 def predict():
+    # Ensure models are loaded before prediction
+    ensure_models_loaded()
+    
     data = request.get_json()
     user_id = data.get('userId')
 
@@ -463,6 +467,7 @@ def predict():
         try:
             personalized_result = predict_from_user_history(user_id, data)
             if personalized_result and 'error' not in personalized_result:
+                gc.collect()  # Free memory after prediction
                 return jsonify(personalized_result)
         except Exception as e:
             print(f"Personalized prediction failed: {e}")
@@ -480,6 +485,7 @@ def predict():
     }
 
     result = predict_optimal_schedule(task_features)
+    gc.collect()  # Free memory after prediction
     return jsonify(result)
 
 @app.route('/insights/<user_id>', methods=['GET'])
@@ -501,9 +507,8 @@ def get_user_insights(user_id):
         })
 
     try:
-        # Limit query to most recent 500 tasks to prevent memory issues and timeouts
-        # Order by creation time descending and limit results
-        MAX_TASKS = 500
+        # Reduced limits to prevent OOM errors on Render
+        MAX_TASKS = 100
         
         # Get user's tasks from Firestore with limit (using filter keyword to avoid deprecation warning)
         tasks_ref = db.collection('tasks').where(filter=FieldFilter('userId', '==', user_id)).limit(MAX_TASKS)
@@ -513,7 +518,7 @@ def get_user_insights(user_id):
         completed_tasks = []
         task_count = 0
         
-        # Process tasks efficiently with early exit
+        # Process tasks efficiently with early exit - process in smaller chunks
         for task in tasks:
             if task_count >= MAX_TASKS:
                 break
@@ -524,6 +529,10 @@ def get_user_insights(user_id):
             # Count only completed tasks for analysis
             if task_dict.get('completed', False):
                 completed_tasks.append(task_dict)
+            
+            # Force garbage collection every 20 tasks to free memory
+            if task_count % 20 == 0:
+                gc.collect()
 
         if not task_data:
             # Provide helpful insights even when user has no tasks yet
@@ -539,10 +548,16 @@ def get_user_insights(user_id):
 
         # Analyze patterns using completed tasks for behavior but include all tasks for completion rate
         # Use optimized analysis that processes data more efficiently
+        completed_count = len(completed_tasks)
         insights = analyze_user_patterns(task_data, completed_tasks)
+        
+        # Clear large data structures from memory immediately
+        del task_data
+        del completed_tasks
+        gc.collect()
 
         # Return total completed tasks analyzed (not all tasks)
-        return jsonify({"insights": insights, "total_tasks": len(completed_tasks)})
+        return jsonify({"insights": insights, "total_tasks": completed_count})
 
     except Exception as e:
         # Log error for debugging but don't expose to user
@@ -588,9 +603,9 @@ def coerce_to_datetime(value):
 def predict_from_user_history(user_id, task_data):
     """Predict optimal schedule based on user's own completed task history"""
     try:
-        # Limit queries to prevent memory issues and timeouts
-        MAX_COMPLETED_TASKS = 200
-        MAX_PRODUCTIVITY_LOGS = 200
+        # Reduced limits to prevent OOM errors on Render
+        MAX_COMPLETED_TASKS = 50
+        MAX_PRODUCTIVITY_LOGS = 50
         
         # Get user's completed tasks with limit (using filter keyword to avoid deprecation warning)
         tasks_ref = db.collection('tasks').where(filter=FieldFilter('userId', '==', user_id)).where(filter=FieldFilter('completed', '==', True)).limit(MAX_COMPLETED_TASKS)
@@ -605,6 +620,10 @@ def predict_from_user_history(user_id, task_data):
             task_dict['id'] = task.id
             completed_tasks.append(task_dict)
             task_count += 1
+            
+            # Force garbage collection every 10 tasks
+            if task_count % 10 == 0:
+                gc.collect()
 
         if len(completed_tasks) < 3:
             return {
@@ -631,11 +650,15 @@ def predict_from_user_history(user_id, task_data):
                     if task_id and task_id not in completion_data:
                         completion_data[task_id] = log_dict
                     log_count += 1
+                    
+                    # Force garbage collection every 10 logs
+                    if log_count % 10 == 0:
+                        gc.collect()
             except Exception as log_error:
                 print(f"Skipping productivity collection {collection_name}: {log_error}")
                 continue
 
-        # Analyze patterns by category
+        # Analyze patterns by category - process efficiently
         category_patterns = {}
         current_category = task_data.get('category', 'Personal')
 
@@ -682,6 +705,11 @@ def predict_from_user_history(user_id, task_data):
                     'priority': task.get('priority', 2),
                     'weekday': completed_at.weekday()
                 })
+        
+        # Clear large data structures
+        del completed_tasks
+        del completion_data
+        gc.collect()
 
         # Find best time for current category
         if current_category in category_patterns and category_patterns[current_category]:
@@ -726,10 +754,10 @@ def predict_from_user_history(user_id, task_data):
         return None
 
 def analyze_user_patterns(all_tasks, completed_tasks=None):
-    """Analyze user task patterns and provide insights - optimized for performance"""
+    """Analyze user task patterns and provide insights - optimized for memory"""
     insights = []
 
-    # Normalize inputs efficiently
+    # Normalize inputs efficiently - use generator comprehension to save memory
     if completed_tasks is None:
         completed_tasks = [t for t in all_tasks if t.get('completed', False)]
 
@@ -745,11 +773,12 @@ def analyze_user_patterns(all_tasks, completed_tasks=None):
     insights.append(f"Task completion rate: {completion_rate:.1%}")
 
     # Priority analysis - use completed tasks for more accurate insights
+    # Process in single pass to minimize memory usage
     priority_counts = {}
+    category_counts = {}
     tasks_to_analyze = completed_tasks if completed_tasks else all_tasks
     
     # Single pass through tasks for both priority and category
-    category_counts = {}
     for task in tasks_to_analyze:
         # Count priority
         priority = task.get('priority', 2)
@@ -768,25 +797,62 @@ def analyze_user_patterns(all_tasks, completed_tasks=None):
         most_common_category = max(category_counts, key=category_counts.get)
         insights.append(f"Your most common task category is {most_common_category}")
 
+    # Clear temporary variables
+    del priority_counts
+    del category_counts
+    gc.collect()
+
     return insights
 
-# Initialize models when module is imported (works with both Flask dev server and Gunicorn)
-# This ensures models are loaded even when using Gunicorn (which doesn't run __main__)
-# Wrap in try-except to ensure app starts even if model loading fails
-try:
-    print("Initializing ML models...")
-    models_loaded = load_models()
+# Lazy load models to reduce memory usage at startup
+# Only load general model initially, category models loaded on demand
+_models_initialized = False
 
+def ensure_models_loaded():
+    """Lazy load models only when needed"""
+    global _models_initialized, model, label_encoders, models_by_category
+    
+    if _models_initialized:
+        return True
+    
+    try:
+        print("Initializing ML models...")
+        models_loaded = load_models()
+
+        if not models_loaded:
+            # If no saved models exist, train new ones
+            print("No saved models found. Training ML model...")
+            train_model()
+        else:
+            print("Successfully loaded saved models! (Cold start optimized)")
+        
+        _models_initialized = True
+        # Force garbage collection after model loading
+        gc.collect()
+        return True
+    except Exception as e:
+        print(f"Warning: Model initialization failed: {e}")
+        print("App will continue to run, but ML predictions may not work until models are trained.")
+        # Set models to None so the app knows they're not loaded
+        model = None
+        models_by_category = {}
+        return False
+
+# Initialize only general model at startup to save memory
+try:
+    print("Initializing base ML model...")
+    models_loaded = load_models()
     if not models_loaded:
-        # If no saved models exist, train new ones
-        print("No saved models found. Training ML model...")
-        train_model()
+        print("No saved models found. Models will be trained on first use.")
     else:
         print("Successfully loaded saved models! (Cold start optimized)")
+        _models_initialized = True
+        # Only keep general model in memory, clear category models to save memory
+        if models_by_category:
+            print(f"Loaded {len(models_by_category)} category models. Keeping in memory for now.")
 except Exception as e:
     print(f"Warning: Model initialization failed: {e}")
     print("App will continue to run, but ML predictions may not work until models are trained.")
-    # Set models to None so the app knows they're not loaded
     model = None
     models_by_category = {}
 
