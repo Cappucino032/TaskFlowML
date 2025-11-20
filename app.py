@@ -501,26 +501,16 @@ def get_user_insights(user_id):
         })
 
     try:
-        # Limit query to most recent 500 tasks to prevent memory issues and timeouts
-        # Order by creation time descending and limit results
-        MAX_TASKS = 500
-        
-        # Get user's tasks from Firestore with limit (using filter keyword to avoid deprecation warning)
-        tasks_ref = db.collection('tasks').where(filter=FieldFilter('userId', '==', user_id)).limit(MAX_TASKS)
+        # Get user's tasks from Firestore (using filter keyword to avoid deprecation warning)
+        tasks_ref = db.collection('tasks').where(filter=FieldFilter('userId', '==', user_id))
         tasks = tasks_ref.stream()
 
         task_data = []
         completed_tasks = []
-        task_count = 0
-        
-        # Process tasks efficiently with early exit
         for task in tasks:
-            if task_count >= MAX_TASKS:
-                break
             task_dict = task.to_dict()
             task_dict['id'] = task.id
             task_data.append(task_dict)
-            task_count += 1
             # Count only completed tasks for analysis
             if task_dict.get('completed', False):
                 completed_tasks.append(task_dict)
@@ -538,18 +528,12 @@ def get_user_insights(user_id):
             })
 
         # Analyze patterns using completed tasks for behavior but include all tasks for completion rate
-        # Use optimized analysis that processes data more efficiently
         insights = analyze_user_patterns(task_data, completed_tasks)
 
         # Return total completed tasks analyzed (not all tasks)
         return jsonify({"insights": insights, "total_tasks": len(completed_tasks)})
 
     except Exception as e:
-        # Log error for debugging but don't expose to user
-        print(f"Error in get_user_insights: {e}")
-        import traceback
-        traceback.print_exc()
-        
         # Provide fallback insights on error
         fallback_insights = [
             "Unable to load personalized insights at this time.",
@@ -559,7 +543,8 @@ def get_user_insights(user_id):
         ]
         return jsonify({
             "insights": fallback_insights,
-            "total_tasks": 0
+            "total_tasks": 0,
+            "error": str(e)
         })
 
 def coerce_to_datetime(value):
@@ -588,23 +573,15 @@ def coerce_to_datetime(value):
 def predict_from_user_history(user_id, task_data):
     """Predict optimal schedule based on user's own completed task history"""
     try:
-        # Limit queries to prevent memory issues and timeouts
-        MAX_COMPLETED_TASKS = 200
-        MAX_PRODUCTIVITY_LOGS = 200
-        
-        # Get user's completed tasks with limit (using filter keyword to avoid deprecation warning)
-        tasks_ref = db.collection('tasks').where(filter=FieldFilter('userId', '==', user_id)).where(filter=FieldFilter('completed', '==', True)).limit(MAX_COMPLETED_TASKS)
+        # Get user's completed tasks (using filter keyword to avoid deprecation warning)
+        tasks_ref = db.collection('tasks').where(filter=FieldFilter('userId', '==', user_id)).where(filter=FieldFilter('completed', '==', True))
         tasks = tasks_ref.stream()
 
         completed_tasks = []
-        task_count = 0
         for task in tasks:
-            if task_count >= MAX_COMPLETED_TASKS:
-                break
             task_dict = task.to_dict()
             task_dict['id'] = task.id
             completed_tasks.append(task_dict)
-            task_count += 1
 
         if len(completed_tasks) < 3:
             return {
@@ -620,20 +597,17 @@ def predict_from_user_history(user_id, task_data):
 
         for collection_name, field_name in productivity_sources:
             try:
-                logs_ref = db.collection(collection_name).where(filter=FieldFilter(field_name, '==', user_id)).limit(MAX_PRODUCTIVITY_LOGS)
+                logs_ref = db.collection(collection_name).where(filter=FieldFilter(field_name, '==', user_id))
                 logs = logs_ref.stream()
-                log_count = 0
-                for log in logs:
-                    if log_count >= MAX_PRODUCTIVITY_LOGS:
-                        break
-                    log_dict = log.to_dict()
-                    task_id = log_dict.get('task_id') or log_dict.get('taskId')
-                    if task_id and task_id not in completion_data:
-                        completion_data[task_id] = log_dict
-                    log_count += 1
             except Exception as log_error:
                 print(f"Skipping productivity collection {collection_name}: {log_error}")
                 continue
+
+            for log in logs:
+                log_dict = log.to_dict()
+                task_id = log_dict.get('task_id') or log_dict.get('taskId')
+                if task_id and task_id not in completion_data:
+                    completion_data[task_id] = log_dict
 
         # Analyze patterns by category
         category_patterns = {}
@@ -726,43 +700,36 @@ def predict_from_user_history(user_id, task_data):
         return None
 
 def analyze_user_patterns(all_tasks, completed_tasks=None):
-    """Analyze user task patterns and provide insights - optimized for performance"""
+    """Analyze user task patterns and provide insights"""
     insights = []
 
-    # Normalize inputs efficiently
+    # Normalize inputs
     if completed_tasks is None:
         completed_tasks = [t for t in all_tasks if t.get('completed', False)]
 
     total_tasks = len(all_tasks)
     completed_count = len(completed_tasks)
 
-    # Early return if no data
-    if total_tasks == 0:
-        return ["No tasks found. Start creating tasks to see insights!"]
-
     # Completion rate (use all tasks for denominator)
     completion_rate = completed_count / total_tasks if total_tasks else 0
     insights.append(f"Task completion rate: {completion_rate:.1%}")
 
-    # Priority analysis - use completed tasks for more accurate insights
+    # Priority analysis
     priority_counts = {}
-    tasks_to_analyze = completed_tasks if completed_tasks else all_tasks
-    
-    # Single pass through tasks for both priority and category
-    category_counts = {}
-    for task in tasks_to_analyze:
-        # Count priority
+    for task in completed_tasks if completed_tasks else all_tasks:
         priority = task.get('priority', 2)
         priority_counts[priority] = priority_counts.get(priority, 0) + 1
-        
-        # Count category
-        category = task.get('category', 'Personal')
-        category_counts[category] = category_counts.get(category, 0) + 1
 
     if priority_counts:
         most_common_priority = max(priority_counts, key=priority_counts.get)
         priority_names = {1: 'Low', 2: 'Medium', 3: 'High'}
-        insights.append(f"You most frequently complete {priority_names.get(most_common_priority, 'Medium')} priority tasks")
+        insights.append(f"You most frequently create {priority_names.get(most_common_priority, 'Medium')} priority tasks")
+
+    # Category analysis
+    category_counts = {}
+    for task in completed_tasks if completed_tasks else all_tasks:
+        category = task.get('category', 'Personal')
+        category_counts[category] = category_counts.get(category, 0) + 1
 
     if category_counts:
         most_common_category = max(category_counts, key=category_counts.get)
