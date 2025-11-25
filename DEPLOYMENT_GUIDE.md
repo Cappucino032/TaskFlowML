@@ -28,17 +28,24 @@
      FIREBASE_KEY_PATH=/app/firebase-key.json  # Optional
      ```
 
-### Step 3: Upload Firebase Key (Optional)
+### Step 3: Configure Firebase Key (Optional)
 If you want Firebase integration:
 
 1. **Download Firebase Service Account Key**:
    - Go to Firebase Console → Project Settings → Service Accounts
    - Generate new private key → Download JSON
 
-2. **Upload to Railway**:
-   - In Railway project → Variables → Add `FIREBASE_KEY_PATH`
-   - Set value to `/app/firebase-key.json`
-   - Upload the JSON file to Railway's file storage
+2. **For Local Development**:
+   - Place the JSON file as `firebase-key.json` in the `ml-backend/` directory
+   - The app will automatically detect and use it
+
+3. **For Production (Render/Railway)**:
+   - Go to your service dashboard → Environment Variables
+   - Add a new environment variable:
+     - **Key**: `FIREBASE_KEY_JSON`
+     - **Value**: Paste the entire contents of your `firebase-key.json` file (all lines as a single string)
+   - The app will automatically parse and use it
+   - **Note**: Never commit `firebase-key.json` to git (already in `.gitignore`)
 
 ### Step 4: Get Your API URL
 - After deployment, Railway provides a URL like: `https://your-app-name.up.railway.app`

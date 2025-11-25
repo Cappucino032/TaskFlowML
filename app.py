@@ -6,28 +6,67 @@ from sklearn.preprocessing import LabelEncoder
 import numpy as np
 import firebase_admin
 from firebase_admin import credentials, firestore
+from google.cloud.firestore_v1.base_query import FieldFilter
 import os
 from datetime import datetime
+import joblib
+import json
+import warnings
 
 app = Flask(__name__)
 
 # Initialize Firebase Admin SDK
-# Note: You'll need to add your Firebase service account key as 'firebase-key.json'
+# Supports both environment variable (production) and file path (local development)
 try:
-    # Check for Railway environment variable or local file
-    firebase_key_path = os.environ.get('FIREBASE_KEY_PATH', 'firebase-key.json')
-    if os.path.exists(firebase_key_path):
-        cred = credentials.Certificate(firebase_key_path)
-        firebase_admin.initialize_app(cred)
-        db = firestore.client()
-        firebase_enabled = True
-        print("Firebase initialized successfully")
+    # Option 1: Check for environment variable with JSON content (for production/Render)
+    firebase_key_json = os.environ.get('FIREBASE_KEY_JSON')
+    if firebase_key_json:
+        print(f"Found FIREBASE_KEY_JSON environment variable (length: {len(firebase_key_json)})")
+        print(f"First 50 chars: {firebase_key_json[:50]}")
+        try:
+            # Strip whitespace and newlines that Render might add
+            firebase_key_json = firebase_key_json.strip()
+            # Parse JSON from environment variable
+            key_data = json.loads(firebase_key_json)
+            print("Successfully parsed JSON from environment variable")
+            # Verify it has required fields
+            if 'type' not in key_data or key_data.get('type') != 'service_account':
+                raise ValueError("Invalid service account key: missing or incorrect 'type' field")
+            if 'private_key' not in key_data:
+                raise ValueError("Invalid service account key: missing 'private_key' field")
+            print("Service account key structure validated")
+            cred = credentials.Certificate(key_data)
+            firebase_admin.initialize_app(cred)
+            db = firestore.client()
+            firebase_enabled = True
+            print("Firebase initialized successfully from environment variable")
+        except json.JSONDecodeError as json_err:
+            print(f"Failed to parse JSON from environment variable: {json_err}")
+            print(f"First 100 chars of value: {firebase_key_json[:100]}")
+            print(f"Last 50 chars of value: {firebase_key_json[-50:]}")
+            raise
+        except Exception as parse_err:
+            print(f"Error processing Firebase key from environment variable: {parse_err}")
+            raise
     else:
-        print("Firebase key not found - running in offline mode")
-        firebase_enabled = False
-        db = None
+        print("FIREBASE_KEY_JSON environment variable not found")
+        # Option 2: Fall back to file path (for local development)
+        firebase_key_path = os.environ.get('FIREBASE_KEY_PATH', 'firebase-key.json')
+        print(f"Checking for Firebase key file at: {firebase_key_path}")
+        if os.path.exists(firebase_key_path):
+            cred = credentials.Certificate(firebase_key_path)
+            firebase_admin.initialize_app(cred)
+            db = firestore.client()
+            firebase_enabled = True
+            print("Firebase initialized successfully from file")
+        else:
+            print(f"Firebase key file not found at {firebase_key_path} - running in offline mode")
+            firebase_enabled = False
+            db = None
 except Exception as e:
     print(f"Firebase initialization failed: {e} - running in offline mode")
+    import traceback
+    traceback.print_exc()
     firebase_enabled = False
     db = None
 
@@ -36,6 +75,14 @@ model = None
 label_encoders = {}
 models_by_category = {}  # Store separate models for each category
 feature_columns = ['task_type', 'priority_level', 'estimated_duration', 'deadline_proximity', 'reschedule_frequency', 'productive_time', 'preferred_time', 'reminder_preference']
+
+# Model persistence paths
+MODELS_DIR = os.path.join(os.path.dirname(__file__), 'models')
+os.makedirs(MODELS_DIR, exist_ok=True)
+GENERAL_MODEL_PATH = os.path.join(MODELS_DIR, 'general_model.joblib')
+GENERAL_ENCODERS_PATH = os.path.join(MODELS_DIR, 'general_encoders.joblib')
+CATEGORY_MODELS_DIR = os.path.join(MODELS_DIR, 'categories')
+os.makedirs(CATEGORY_MODELS_DIR, exist_ok=True)
 
 def load_and_preprocess_data():
     """Load survey data and preprocess for ML training"""
@@ -95,6 +142,73 @@ def load_and_preprocess_data():
         print(f"Error loading data: {e}")
         return None
 
+def save_models():
+    """Save trained models and encoders to disk for faster cold starts"""
+    try:
+        # Save general model and encoders
+        if model is not None:
+            joblib.dump(model, GENERAL_MODEL_PATH)
+            joblib.dump(label_encoders, GENERAL_ENCODERS_PATH)
+            print(f"Saved general model to {GENERAL_MODEL_PATH}")
+
+        # Save category-specific models
+        for category, category_data in models_by_category.items():
+            # Sanitize category name for filename
+            safe_category = "".join(c if c.isalnum() or c in (' ', '-', '_') else '_' for c in category)
+            category_model_path = os.path.join(CATEGORY_MODELS_DIR, f"{safe_category}_model.joblib")
+            category_encoders_path = os.path.join(CATEGORY_MODELS_DIR, f"{safe_category}_encoders.joblib")
+            
+            joblib.dump(category_data['model'], category_model_path)
+            joblib.dump(category_data['encoders'], category_encoders_path)
+            print(f"Saved model for category '{category}' to {category_model_path}")
+
+        return True
+    except Exception as e:
+        print(f"Error saving models: {e}")
+        return False
+
+def load_models():
+    """Load trained models and encoders from disk if they exist"""
+    global model, label_encoders, models_by_category
+    
+    try:
+        loaded_any = False
+        
+        # Load general model
+        if os.path.exists(GENERAL_MODEL_PATH) and os.path.exists(GENERAL_ENCODERS_PATH):
+            model = joblib.load(GENERAL_MODEL_PATH)
+            label_encoders = joblib.load(GENERAL_ENCODERS_PATH)
+            print(f"Loaded general model from {GENERAL_MODEL_PATH}")
+            loaded_any = True
+
+        # Load category-specific models
+        if os.path.exists(CATEGORY_MODELS_DIR):
+            for filename in os.listdir(CATEGORY_MODELS_DIR):
+                if filename.endswith('_model.joblib'):
+                    category_name = filename.replace('_model.joblib', '')
+                    encoders_filename = filename.replace('_model.joblib', '_encoders.joblib')
+                    
+                    model_path = os.path.join(CATEGORY_MODELS_DIR, filename)
+                    encoders_path = os.path.join(CATEGORY_MODELS_DIR, encoders_filename)
+                    
+                    if os.path.exists(encoders_path):
+                        category_model = joblib.load(model_path)
+                        category_encoders = joblib.load(encoders_path)
+                        
+                        # Try to get accuracy from a metadata file, or default to 0.8
+                        models_by_category[category_name] = {
+                            'model': category_model,
+                            'encoders': category_encoders,
+                            'accuracy': 0.8  # Default accuracy if not saved
+                        }
+                        print(f"Loaded model for category '{category_name}' from {model_path}")
+                        loaded_any = True
+
+        return loaded_any
+    except Exception as e:
+        print(f"Error loading models: {e}")
+        return False
+
 def train_model():
     """Train separate CART decision tree models for each category"""
     global model, label_encoders, models_by_category
@@ -137,15 +251,17 @@ def train_model():
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
         # Train CART model (Decision Tree) for this category
-        category_model = DecisionTreeClassifier(
-            criterion='gini',
-            max_depth=5,
-            min_samples_split=2,
-            min_samples_leaf=1,
-            random_state=42
-        )
-
-        category_model.fit(X_train, y_train)
+        # Suppress sklearn feature name warnings
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', module='sklearn')
+            category_model = DecisionTreeClassifier(
+                criterion='gini',
+                max_depth=5,
+                min_samples_split=2,
+                min_samples_leaf=1,
+                random_state=42
+            )
+            category_model.fit(X_train, y_train)
 
         # Calculate accuracy
         accuracy = category_model.score(X_test, y_test)
@@ -172,17 +288,22 @@ def train_model():
     y = encoded_df['optimal_schedule_time']
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-    model = DecisionTreeClassifier(
-        criterion='gini',
-        max_depth=5,
-        min_samples_split=2,
-        min_samples_leaf=1,
-        random_state=42
-    )
-
-    model.fit(X_train, y_train)
+    # Suppress sklearn feature name warnings for general model
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', module='sklearn')
+        model = DecisionTreeClassifier(
+            criterion='gini',
+            max_depth=5,
+            min_samples_split=2,
+            min_samples_leaf=1,
+            random_state=42
+        )
+        model.fit(X_train, y_train)
     accuracy = model.score(X_test, y_test)
     print(f"General model trained with accuracy: {accuracy:.2f}")
+
+    # Save models to disk for faster cold starts
+    save_models()
 
     return True
 
@@ -215,15 +336,17 @@ def predict_optimal_schedule(task_features):
                     encoded_features.append(0)
 
             # Make prediction with category-specific model
-            prediction = category_model.predict([encoded_features])[0]
+            # Suppress sklearn feature name warnings during prediction
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', module='sklearn')
+                prediction = category_model.predict([encoded_features])[0]
+                confidence = float(category_model.predict_proba([encoded_features]).max())
 
             # Decode prediction
             if 'optimal_schedule_time' in category_encoders:
                 predicted_time = category_encoders['optimal_schedule_time'].inverse_transform([prediction])[0]
             else:
                 predicted_time = "Unknown"
-
-            confidence = float(category_model.predict_proba([encoded_features]).max())
 
             return {
                 "optimal_time": predicted_time,
@@ -249,7 +372,10 @@ def predict_optimal_schedule(task_features):
                     encoded_features.append(0)
 
             # Make prediction with general model
-            prediction = model.predict([encoded_features])[0]
+            # Suppress sklearn feature name warnings during prediction
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', module='sklearn')
+                prediction = model.predict([encoded_features])[0]
 
             # Decode prediction
             if 'optimal_schedule_time' in label_encoders:
@@ -257,7 +383,10 @@ def predict_optimal_schedule(task_features):
             else:
                 predicted_time = "Unknown"
 
-            confidence = float(model.predict_proba([encoded_features]).max())
+            # Suppress sklearn warnings for predict_proba as well
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', module='sklearn')
+                confidence = float(model.predict_proba([encoded_features]).max())
 
             return {
                 "optimal_time": predicted_time,
@@ -269,6 +398,34 @@ def predict_optimal_schedule(task_features):
     except Exception as e:
         return {"error": str(e)}
 
+@app.route('/debug/firebase', methods=['GET'])
+def debug_firebase():
+    """Debug endpoint to check Firebase configuration status"""
+    firebase_key_json = os.environ.get('FIREBASE_KEY_JSON')
+    firebase_key_path = os.environ.get('FIREBASE_KEY_PATH', 'firebase-key.json')
+    
+    debug_info = {
+        'firebase_enabled': firebase_enabled,
+        'has_env_var': firebase_key_json is not None,
+        'env_var_length': len(firebase_key_json) if firebase_key_json else 0,
+        'env_var_starts_with': firebase_key_json[:50] if firebase_key_json else None,
+        'has_file_path_env': os.environ.get('FIREBASE_KEY_PATH') is not None,
+        'file_exists': os.path.exists(firebase_key_path) if firebase_key_path else False,
+        'all_env_vars': [k for k in os.environ.keys() if 'FIREBASE' in k.upper()],
+    }
+    
+    # Try to parse if env var exists
+    if firebase_key_json:
+        try:
+            test_parse = json.loads(firebase_key_json)
+            debug_info['json_parse_success'] = True
+            debug_info['json_has_type'] = test_parse.get('type') == 'service_account'
+        except Exception as e:
+            debug_info['json_parse_success'] = False
+            debug_info['json_parse_error'] = str(e)
+    
+    return jsonify(debug_info)
+
 @app.route('/health', methods=['GET'])
 def health_check():
     category_models_count = len(models_by_category) if models_by_category else 0
@@ -279,6 +436,18 @@ def health_check():
         "categories": list(models_by_category.keys()) if models_by_category else []
     })
 
+@app.route('/keepalive', methods=['GET', 'HEAD'])
+def keepalive():
+    """Keep-alive endpoint to prevent Render free tier from sleeping"""
+    response = jsonify({
+        "status": "awake",
+        "message": "Service is active"
+    })
+    # Handle HEAD requests (used by monitoring services like UptimeRobot)
+    if request.method == 'HEAD':
+        return '', 200
+    return response
+
 @app.route('/train', methods=['POST'])
 def train():
     success = train_model()
@@ -287,17 +456,27 @@ def train():
 @app.route('/predict', methods=['POST'])
 def predict():
     data = request.get_json()
+    user_id = data.get('userId')
 
-    # Extract task features from request
+    # Try personalized prediction first if user has task history
+    if user_id and firebase_enabled:
+        try:
+            personalized_result = predict_from_user_history(user_id, data)
+            if personalized_result and 'error' not in personalized_result:
+                return jsonify(personalized_result)
+        except Exception as e:
+            print(f"Personalized prediction failed: {e}")
+
+    # Fall back to survey-based prediction
     task_features = {
         'task_type': data.get('category', 'Personal'),
         'priority_level': 'High' if data.get('priority') == 3 else 'Medium' if data.get('priority') == 2 else 'Low',
         'estimated_duration': data.get('estimatedDuration', '30 minutes – 1 hour'),
-        'deadline_proximity': '1–2 days before',  # Default assumption
-        'reschedule_frequency': 'Rarely (1–2 times a week)',  # Default assumption
-        'productive_time': 'Evening (6 PM – 12 MN)',  # Default assumption
-        'preferred_time': 'Evening (6 PM – 12 MN)',  # Default assumption
-        'reminder_preference': 'Early reminders (1–2 days before)'  # Default assumption
+        'deadline_proximity': '1–2 days before',
+        'reschedule_frequency': 'Rarely (1–2 times a week)',
+        'productive_time': 'Evening (6 PM – 12 MN)',
+        'preferred_time': 'Evening (6 PM – 12 MN)',
+        'reminder_preference': 'Early reminders (1–2 days before)'
     }
 
     result = predict_optimal_schedule(task_features)
@@ -307,42 +486,262 @@ def predict():
 def get_user_insights(user_id):
     """Get personalized insights for a user based on their task history"""
     if not firebase_enabled:
-        return jsonify({"insights": ["Firebase not configured - cannot access user data"]})
+        # Provide fallback insights when Firebase is not configured
+        # Don't show error message to user, just provide helpful general insights
+        fallback_insights = [
+            "Based on general productivity patterns, morning hours (6 AM - 12 PM) tend to be most productive for most users.",
+            "Breaking tasks into smaller, manageable chunks can improve completion rates.",
+            "Setting specific start and end times for tasks helps maintain focus and productivity.",
+            "Regular breaks between tasks can help maintain energy levels throughout the day.",
+            "Prioritizing high-importance tasks earlier in the day can lead to better outcomes."
+        ]
+        return jsonify({
+            "insights": fallback_insights,
+            "total_tasks": 0
+        })
 
     try:
-        # Get user's tasks from Firestore
-        tasks_ref = db.collection('tasks').where('userId', '==', user_id)
+        # Get user's tasks from Firestore (using filter keyword to avoid deprecation warning)
+        tasks_ref = db.collection('tasks').where(filter=FieldFilter('userId', '==', user_id))
         tasks = tasks_ref.stream()
 
         task_data = []
+        completed_tasks = []
         for task in tasks:
             task_dict = task.to_dict()
             task_dict['id'] = task.id
             task_data.append(task_dict)
+            # Count only completed tasks for analysis
+            if task_dict.get('completed', False):
+                completed_tasks.append(task_dict)
 
         if not task_data:
-            return jsonify({"insights": ["No task history available yet. Complete some tasks to see insights!"]})
+            # Provide helpful insights even when user has no tasks yet
+            return jsonify({
+                "insights": [
+                    "No task history available yet. Complete some tasks to see personalized insights!",
+                    "Start by creating tasks with specific start and end times.",
+                    "Mark tasks as complete to help the AI learn your productivity patterns.",
+                    "Use the calendar view to visualize your task schedule."
+                ],
+                "total_tasks": 0
+            })
 
-        # Analyze patterns
-        insights = analyze_user_patterns(task_data)
+        # Analyze patterns using completed tasks for behavior but include all tasks for completion rate
+        insights = analyze_user_patterns(task_data, completed_tasks)
 
-        return jsonify({"insights": insights, "total_tasks": len(task_data)})
+        # Return total completed tasks analyzed (not all tasks)
+        return jsonify({"insights": insights, "total_tasks": len(completed_tasks)})
 
     except Exception as e:
-        return jsonify({"error": str(e)})
+        # Provide fallback insights on error
+        fallback_insights = [
+            "Unable to load personalized insights at this time.",
+            "General tip: Schedule tasks during your most productive hours.",
+            "Break large tasks into smaller, manageable pieces.",
+            "Set reminders to stay on track with your schedule."
+        ]
+        return jsonify({
+            "insights": fallback_insights,
+            "total_tasks": 0,
+            "error": str(e)
+        })
 
-def analyze_user_patterns(tasks):
+def coerce_to_datetime(value):
+    """Best-effort conversion of various timestamp formats to datetime"""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if hasattr(value, 'to_pydatetime'):
+        return value.to_pydatetime()
+    if isinstance(value, dict) and 'seconds' in value:
+        seconds = value.get('seconds', 0)
+        nanos = value.get('nanoseconds', 0)
+        return datetime.fromtimestamp(seconds + nanos / 1_000_000_000)
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value)
+    if isinstance(value, str):
+        try:
+            normalized = value.replace('Z', '+00:00')
+            return datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+    return None
+
+
+def predict_from_user_history(user_id, task_data):
+    """Predict optimal schedule based on user's own completed task history"""
+    try:
+        # Get user's completed tasks (using filter keyword to avoid deprecation warning)
+        tasks_ref = db.collection('tasks').where(filter=FieldFilter('userId', '==', user_id)).where(filter=FieldFilter('completed', '==', True))
+        tasks = tasks_ref.stream()
+
+        completed_tasks = []
+        for task in tasks:
+            task_dict = task.to_dict()
+            task_dict['id'] = task.id
+            completed_tasks.append(task_dict)
+
+        if len(completed_tasks) < 3:
+            return {
+                "insufficient_data": True,
+                "message": "Complete at least 3 tasks to unlock personalized AI recommendations."
+            }
+
+        completion_data = {}
+        productivity_sources = [
+            ('productivity_logs', 'user_id'),
+            ('productivityLogs', 'userId'),
+        ]
+
+        for collection_name, field_name in productivity_sources:
+            try:
+                logs_ref = db.collection(collection_name).where(filter=FieldFilter(field_name, '==', user_id))
+                logs = logs_ref.stream()
+            except Exception as log_error:
+                print(f"Skipping productivity collection {collection_name}: {log_error}")
+                continue
+
+            for log in logs:
+                log_dict = log.to_dict()
+                task_id = log_dict.get('task_id') or log_dict.get('taskId')
+                if task_id and task_id not in completion_data:
+                    completion_data[task_id] = log_dict
+
+        # Analyze patterns by category
+        category_patterns = {}
+        current_category = task_data.get('category', 'Personal')
+
+        for task in completed_tasks:
+            category = task.get('category', 'Personal')
+            if category not in category_patterns:
+                category_patterns[category] = []
+
+            # Get completion time from productivity log or estimate
+            task_id = task.get('id')
+            log_data = completion_data.get(task_id, {})
+
+            # Extract completion time (prefer actual log data, fallback to due date)
+            completed_at = None
+            completed_at = coerce_to_datetime(
+                log_data.get('completion_at') or
+                log_data.get('completedAt') or
+                log_data.get('completed_time')
+            )
+
+            if completed_at is None:
+                completed_at = coerce_to_datetime(
+                    task.get('completedAt') or
+                    task.get('completed_at')
+                )
+
+            if completed_at is None:
+                completed_at = coerce_to_datetime(
+                    task.get('startTime') or
+                    task.get('start_time')
+                )
+
+            if completed_at is None:
+                completed_at = coerce_to_datetime(
+                    task.get('dueAt') or
+                    task.get('dueDate') or
+                    task.get('due_at')
+                )
+
+            if completed_at:
+                completion_hour = completed_at.hour
+                category_patterns[category].append({
+                    'hour': completion_hour,
+                    'priority': task.get('priority', 2),
+                    'weekday': completed_at.weekday()
+                })
+
+        # Find best time for current category
+        if current_category in category_patterns and category_patterns[current_category]:
+            category_data = category_patterns[current_category]
+
+            # Group by hour and count successes
+            hour_counts = {}
+            for entry in category_data:
+                hour = entry['hour']
+                hour_counts[hour] = hour_counts.get(hour, 0) + 1
+
+            if hour_counts:
+                best_hour = max(hour_counts, key=hour_counts.get)
+                confidence = hour_counts[best_hour] / len(category_data)
+
+                # Calculate time range based on completion hours
+                # Get all hours that have at least 20% of the max count (to include related hours)
+                max_count = hour_counts[best_hour]
+                threshold = max(1, int(max_count * 0.2))  # At least 20% of max, minimum 1
+                
+                # Find the range of hours that meet the threshold
+                relevant_hours = [h for h, count in hour_counts.items() if count >= threshold]
+                if relevant_hours:
+                    min_hour = min(relevant_hours)
+                    max_hour = max(relevant_hours)
+                    
+                    # Extend range by 3 hours on each side to create a practical window
+                    # Example: if best is 9am, suggest 6am-12pm
+                    range_start = max(0, min_hour - 3)
+                    range_end = min(23, max_hour + 3)
+                    
+                    # Format time range
+                    def format_hour(h):
+                        if h == 0:
+                            return "12 AM"
+                        elif h < 12:
+                            return f"{h} AM"
+                        elif h == 12:
+                            return "12 PM"
+                        else:
+                            return f"{h - 12} PM"
+                    
+                    time_period = f"{format_hour(range_start)} – {format_hour(range_end)}"
+                else:
+                    # Fallback to time period if no range can be calculated
+                    if 6 <= best_hour < 12:
+                        time_period = "6 AM – 12 PM"
+                    elif 12 <= best_hour < 18:
+                        time_period = "12 PM – 6 PM"
+                    elif 18 <= best_hour < 24:
+                        time_period = "6 PM – 12 AM"
+                    else:
+                        time_period = "12 AM – 3 AM"
+
+                return {
+                    "optimal_time": time_period,
+                    "confidence": confidence,
+                    "model_used": f"personalized ({current_category})",
+                    "sample_size": len(category_data),
+                    "reasoning": f"Based on {len(category_data)} completed {current_category.lower()} tasks"
+                }
+
+        return None
+
+    except Exception as e:
+        print(f"Error in personalized prediction: {e}")
+        return None
+
+def analyze_user_patterns(all_tasks, completed_tasks=None):
     """Analyze user task patterns and provide insights"""
     insights = []
 
-    # Completion rate
-    completed_tasks = [t for t in tasks if t.get('completed', False)]
-    completion_rate = len(completed_tasks) / len(tasks) if tasks else 0
+    # Normalize inputs
+    if completed_tasks is None:
+        completed_tasks = [t for t in all_tasks if t.get('completed', False)]
+
+    total_tasks = len(all_tasks)
+    completed_count = len(completed_tasks)
+
+    # Completion rate (use all tasks for denominator)
+    completion_rate = completed_count / total_tasks if total_tasks else 0
     insights.append(f"Task completion rate: {completion_rate:.1%}")
 
     # Priority analysis
     priority_counts = {}
-    for task in tasks:
+    for task in completed_tasks if completed_tasks else all_tasks:
         priority = task.get('priority', 2)
         priority_counts[priority] = priority_counts.get(priority, 0) + 1
 
@@ -353,7 +752,7 @@ def analyze_user_patterns(tasks):
 
     # Category analysis
     category_counts = {}
-    for task in tasks:
+    for task in completed_tasks if completed_tasks else all_tasks:
         category = task.get('category', 'Personal')
         category_counts[category] = category_counts.get(category, 0) + 1
 
@@ -363,12 +762,28 @@ def analyze_user_patterns(tasks):
 
     return insights
 
+# Initialize models when module is imported (works with both Flask dev server and Gunicorn)
+# This ensures models are loaded even when using Gunicorn (which doesn't run __main__)
+# Wrap in try-except to ensure app starts even if model loading fails
+try:
+    print("Initializing ML models...")
+    models_loaded = load_models()
+
+    if not models_loaded:
+        # If no saved models exist, train new ones
+        print("No saved models found. Training ML model...")
+        train_model()
+    else:
+        print("Successfully loaded saved models! (Cold start optimized)")
+except Exception as e:
+    print(f"Warning: Model initialization failed: {e}")
+    print("App will continue to run, but ML predictions may not work until models are trained.")
+    # Set models to None so the app knows they're not loaded
+    model = None
+    models_by_category = {}
+
+# Only run Flask dev server if script is executed directly (not when imported by Gunicorn)
 if __name__ == '__main__':
-    # Train model on startup
-    print("Training ML model...")
-    train_model()
-
-    # Get port from environment variable (Railway sets this)
+    # Get port from environment variable (Railway/Render sets this)
     port = int(os.environ.get('PORT', 5000))
-
     app.run(debug=False, host='0.0.0.0', port=port)
