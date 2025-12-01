@@ -671,44 +671,21 @@ def predict_from_user_history(user_id, task_data):
                 best_hour = max(hour_counts, key=hour_counts.get)
                 confidence = hour_counts[best_hour] / len(category_data)
 
-                # Calculate time range based on completion hours
-                # Get all hours that have at least 20% of the max count (to include related hours)
-                max_count = hour_counts[best_hour]
-                threshold = max(1, int(max_count * 0.2))  # At least 20% of max, minimum 1
+                # Determine which time-of-day period the best hour falls into
+                # We have 4 predefined time periods:
+                # 1. 6 AM – 12 PM (hours 6-11)
+                # 2. 12 PM – 6 PM (hours 12-17)
+                # 3. 6 PM – 12 AM (hours 18-23)
+                # 4. 12 AM – 6 AM (hours 0-5)
                 
-                # Find the range of hours that meet the threshold
-                relevant_hours = [h for h, count in hour_counts.items() if count >= threshold]
-                if relevant_hours:
-                    min_hour = min(relevant_hours)
-                    max_hour = max(relevant_hours)
-                    
-                    # Extend range by 3 hours on each side to create a practical window
-                    # Example: if best is 9am, suggest 6am-12pm
-                    range_start = max(0, min_hour - 3)
-                    range_end = min(23, max_hour + 3)
-                    
-                    # Format time range
-                    def format_hour(h):
-                        if h == 0:
-                            return "12 AM"
-                        elif h < 12:
-                            return f"{h} AM"
-                        elif h == 12:
-                            return "12 PM"
-                        else:
-                            return f"{h - 12} PM"
-                    
-                    time_period = f"{format_hour(range_start)} – {format_hour(range_end)}"
-                else:
-                    # Fallback to time period if no range can be calculated
-                    if 6 <= best_hour < 12:
-                        time_period = "6 AM – 12 PM"
-                    elif 12 <= best_hour < 18:
-                        time_period = "12 PM – 6 PM"
-                    elif 18 <= best_hour < 24:
-                        time_period = "6 PM – 12 AM"
-                    else:
-                        time_period = "12 AM – 3 AM"
+                if 6 <= best_hour < 12:
+                    time_period = "6 AM – 12 PM"
+                elif 12 <= best_hour < 18:
+                    time_period = "12 PM – 6 PM"
+                elif 18 <= best_hour < 24:
+                    time_period = "6 PM – 12 AM"
+                else:  # hours 0-5 (12 AM – 6 AM)
+                    time_period = "12 AM – 6 AM"
 
                 return {
                     "optimal_time": time_period,
