@@ -4,3 +4,4 @@ pandas==2.3.3
 numpy==2.3.4
 firebase-admin==7.1.0
 gunicorn==21.2.0
+joblib==1.4.2

@@ -1,6 +1,8 @@
 # Firebase keys
 firebase-key.json
 *.key
+COPY_THIS_VALUE.txt
+firebase-env-value.txt
 
 # Python
 __pycache__/

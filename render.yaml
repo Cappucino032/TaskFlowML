@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: taskflow-ml-api
+    runtime: python3
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 2 --timeout 120 --access-logfile - --error-logfile - app:app
+    envVars:
+      - key: PORT
+        value: 10000
+
